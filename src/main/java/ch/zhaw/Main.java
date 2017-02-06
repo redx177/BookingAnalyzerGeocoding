@@ -5,6 +5,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 
 import java.io.*;
+import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -71,7 +72,14 @@ public class Main {
                     String zip = splitLine[pos.get("CUZIP")];
                     String city = splitLine[pos.get("CUORT")];
 
-                    GeoLocation geoLocation = GetGeoLocation(currentWorkingLine, geoCodingServiceUrl, street, zip, city, country);
+                    GeoLocation geoLocation = null;
+                    try {
+                        geoLocation = GetGeoLocation(currentWorkingLine, geoCodingServiceUrl, street, zip, city, country);
+                    } catch (RequestLimitReachedException e) {
+                        StoreCurrentWorkingLineToFile(currentWorkingLineFile, currentWorkingLine);
+                        // Stop execution when request limit has been reached.
+                        break;
+                    }
                     String newLine;
                     if (geoLocation == null) {
                         newLine = line;
@@ -81,10 +89,7 @@ public class Main {
                     out.println(newLine);
                     currentWorkingLine++;
 
-                    // Store current working line
-                    try (PrintWriter outLine = new PrintWriter(currentWorkingLineFile)) {
-                        outLine.print(currentWorkingLine);
-                    }
+                    StoreCurrentWorkingLineToFile(currentWorkingLineFile, currentWorkingLine);
                 }
             }
 
@@ -107,7 +112,17 @@ public class Main {
         }
     }
 
-    private static GeoLocation GetGeoLocation(int currentWorkingLine, String urlString, String street, String zip, String city, String country) {
+    private static void StoreCurrentWorkingLineToFile(String file, int lineNumber) {
+        try {
+            try (PrintWriter outLine = new PrintWriter(file)) {
+                outLine.print(lineNumber);
+            }
+        } catch (FileNotFoundException e) {
+            Log(lineNumber, e, "Unable to log current working line to file. Line: " + lineNumber + " File: " +file);
+        }
+    }
+
+    private static GeoLocation GetGeoLocation(int currentWorkingLine, String urlString, String street, String zip, String city, String country) throws RequestLimitReachedException {
 
         street = encode(currentWorkingLine, street);
         zip = encode(currentWorkingLine, zip);
@@ -126,13 +141,30 @@ public class Main {
             Log(currentWorkingLine, e, "Unable to construct geocoding url");
             return null;
         }
-        JSONTokener tokener = null;
+        HttpURLConnection connection;
+        InputStream inputStream;
         try {
-            tokener = new JSONTokener(url.openStream());
+            connection = (HttpURLConnection)url.openConnection();
+            inputStream = connection.getInputStream();
         } catch (IOException e) {
             Log(currentWorkingLine, e, "Unable to get geocoding results");
             return null;
         }
+
+        Boolean requestLimitReached = false;
+        try {
+            if (connection.getResponseCode() != 200) {
+                requestLimitReached = true;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        if (requestLimitReached) {
+            throw new RequestLimitReachedException();
+        }
+
+        JSONTokener tokener = new JSONTokener(inputStream);
         JSONArray coordinates;
         try {
             JSONObject root = new JSONObject(tokener);
